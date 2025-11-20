@@ -21,14 +21,16 @@ def main():
 
     team_history_len = 5
     team_feature_dim = 8
-    linear_match_dim = 4
+    match_feature_dim = 8  # venue + weather features
+    fetch_weather = False  # Set to True to fetch real weather (slow)
 
     print("Linear Dataset")
     ds_lin = LinearDataset(
         df,
         team_history_len=team_history_len,
         team_feature_dim=team_feature_dim,
-        match_feature_dim=linear_match_dim,
+        match_feature_dim=match_feature_dim,
+        fetch_weather=fetch_weather,
     )
 
     print("Transformer Dataset")
@@ -36,7 +38,8 @@ def main():
         df,
         team_history_len=team_history_len,
         team_feature_dim=team_feature_dim,
-        match_feature_dim=team_feature_dim,
+        match_feature_dim=match_feature_dim,
+        fetch_weather=fetch_weather,
     )
 
     print("LinearDataset length:", len(ds_lin))
@@ -62,9 +65,9 @@ def main():
             F = team_feature_dim
             A_block = x_t[:H]
             B_block = x_t[H: H * 2]
-            M_token = x_t[H * 2]
+            M_token = x_t[H * 2]  # Match context token
             print(" A_block sum:", float(A_block.sum()), "B_block sum:", float(B_block.sum()))
-            print(" M_token (first 6):", M_token[:6])
+            print(" M_token (venue/weather):", M_token[:match_feature_dim].numpy())
         except Exception as e:
             print("TransformerDataset error at idx", idx, e)
 
@@ -84,9 +87,6 @@ def main():
 
             _show_history(A)
             _show_history(B)
-            # show raw match vector from the original match_block implementation
-            raw_M = ds_trans._match_block(row)
-            print("  raw match vector (match_feature_dim=", ds_trans.match_feature_dim, "):", raw_M[:6])
         except Exception as e:
             print("Diagnostics error:", e)
 

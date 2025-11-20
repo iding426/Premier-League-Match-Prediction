@@ -31,6 +31,8 @@ parser = argparse.ArgumentParser(description="Evaluate performance of FPL predic
 parser.add_argument("--model", type=str, default="mlp", choices=["mlp", "transformer"], help="Which fusion model to evaluate")
 parser.add_argument("--checkpoint", type=str, required=True, help="Path to fusion model weights")
 parser.add_argument("--output-dir", type=str, default="eval_results", help="Directory to save evaluation results")
+parser.add_argument("--batch-size", type=int, default=4, help="Batch size for evaluation")
+parser.add_argument("--dataset", ype=str, required=True, help="Path to eval CSV")
 
 args = parser.parse_args()
 
@@ -79,4 +81,13 @@ def loss(
     
     return total_loss, ce, error
 
+# Dataset
+if args.model == "mlp":
+    ds = LinearDataset()
+elif args.model == "transformer":
+    ds = TransformerDataset()
+else:
+    raise ValueError(f"Unknown fusion model: {args.fusion_model}")
+
+dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, drop_last=False)
 
