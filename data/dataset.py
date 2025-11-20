@@ -56,6 +56,11 @@ class TransformerDataset(Dataset):
     
     Expects a dataframe with columns:
         date, home_team, away_team, home_goals, away_goals, ...
+    
+    Returns:
+        x: input features
+        y_result: match result (0=home win, 1=draw, 2=away win)
+        y_goal_diff: goal difference (home_goals - away_goals)
     """
 
     def __init__(
@@ -64,7 +69,6 @@ class TransformerDataset(Dataset):
         team_history_len=20,
         team_feature_dim=32,
         match_feature_dim=8,
-        target_mode="probs",   # or "goal_diff"
         col_map=None,            # optional explicit column mapping
         fetch_weather=False,     # whether to fetch weather data (slow)
     ):
@@ -78,7 +82,6 @@ class TransformerDataset(Dataset):
         self.team_history_len = team_history_len
         self.team_feature_dim = team_feature_dim
         self.match_feature_dim = match_feature_dim
-        self.target_mode = target_mode
         self.fetch_weather = fetch_weather
 
         # build dictionary: team → list of past matches (indices)
@@ -220,21 +223,19 @@ class TransformerDataset(Dataset):
         x = np.concatenate([A_block, B_block, M_block], axis=0)
         x = torch.tensor(x, dtype=torch.float32)
 
-        # Labels
-        if self.target_mode == "probs":
-            # 0 = home win, 1 = draw, 2 = away win
-            if row["home_goals"] > row["away_goals"]:
-                y = 0
-            elif row["home_goals"] < row["away_goals"]:
-                y = 2
-            else:
-                y = 1
-            y = torch.tensor(y, dtype=torch.long)
+        # Match result (classification): 0=home win, 1=draw, 2=away win
+        if row["home_goals"] > row["away_goals"]:
+            y_result = 0
+        elif row["home_goals"] < row["away_goals"]:
+            y_result = 2
+        else:
+            y_result = 1
+        y_result = torch.tensor(y_result, dtype=torch.long)
 
-        elif self.target_mode == "goal_diff":
-            y = torch.tensor([row["goal_diff"]], dtype=torch.float32)
+        # Goal difference (regression)
+        y_goal_diff = torch.tensor([row["goal_diff"]], dtype=torch.float32)
 
-        return x, y
+        return x, y_result, y_goal_diff
 
     def __len__(self):
         return len(self.df)
@@ -242,6 +243,11 @@ class TransformerDataset(Dataset):
 class LinearDataset(Dataset):
     """
     Dataset that returns a single flattened feature vector per match suitable for an MLP.
+    
+    Returns:
+        x: input features
+        y_result: match result (0=home win, 1=draw, 2=away win)
+        y_goal_diff: goal difference (home_goals - away_goals)
     """
 
     def __init__(
@@ -250,7 +256,6 @@ class LinearDataset(Dataset):
         team_history_len=20,
         team_feature_dim=32,
         match_feature_dim=8,
-        target_mode="probs",
         col_map=None,
         fetch_weather=False,
     ):
@@ -263,7 +268,6 @@ class LinearDataset(Dataset):
         self.team_history_len = team_history_len
         self.team_feature_dim = team_feature_dim
         self.match_feature_dim = match_feature_dim
-        self.target_mode = target_mode
         self.fetch_weather = fetch_weather
 
         # build dictionary: team → list of past matches (indices)
@@ -377,21 +381,19 @@ class LinearDataset(Dataset):
         x = np.concatenate([A_flat, B_flat, M_vec], axis=0)
         x = torch.tensor(x, dtype=torch.float32)
 
-        # Labels
-        if self.target_mode == "probs":
-            if row["home_goals"] > row["away_goals"]:
-                y = 0
-            elif row["home_goals"] < row["away_goals"]:
-                y = 2
-            else:
-                y = 1
-            y = torch.tensor(y, dtype=torch.long)
+        # Match result (classification): 0=home win, 1=draw, 2=away win
+        if row["home_goals"] > row["away_goals"]:
+            y_result = 0
+        elif row["home_goals"] < row["away_goals"]:
+            y_result = 2
+        else:
+            y_result = 1
+        y_result = torch.tensor(y_result, dtype=torch.long)
 
-        elif self.target_mode == "goal_diff":
-            y = torch.tensor([row["goal_diff"]], dtype=torch.float32)
+        # Goal difference (regression)
+        y_goal_diff = torch.tensor([row["goal_diff"]], dtype=torch.float32)
 
-        return x, y
+        return x, y_result, y_goal_diff
 
     def __len__(self):
         return len(self.df)
-    
