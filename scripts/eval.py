@@ -91,3 +91,47 @@ else:
 
 dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, drop_last=False)
 
+# Eval on years 2022-2024 only
+all_losses = []
+with torch.no_grad():
+    for batch in tqdm(dl, desc="Evaluating Fusion Model"):
+        # Move to device
+        for k in batch:
+            if isinstance(batch[k], torch.Tensor):
+                batch[k] = batch[k].to(device)
+
+        # Forward pass
+        logits, xgd_pred = model(batch)
+
+        # Compute loss
+        batch_loss, ce, error = loss(
+            logits,
+            xgd_pred,
+            batch['y_result'],
+            batch['y_xgd'],
+            alpha=alpha,
+            beta=beta
+        )
+
+        all_losses.append({
+            'total_loss': batch_loss.item(),
+            'ce_loss': ce.item(),
+            'mse_loss': error.item()
+        })
+
+# Aggregate results
+total_loss = np.mean([l['total_loss'] for l in all_losses])
+ce_loss = np.mean([l['ce_loss'] for l in all_losses])
+mse_loss = np.mean([l['mse_loss'] for l in all_losses])
+results = {
+    'total_loss': total_loss,
+    'ce_loss': ce_loss,
+    'mse_loss': mse_loss
+}
+
+# Save results
+results_path = output_dir / "eval_results.json"
+with open(results_path, 'w') as f:
+    json.dump(results, f, indent=4)
+print(f"Evaluation results saved to {results_path}")
+

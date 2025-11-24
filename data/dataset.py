@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset
 import pandas as pd
 import numpy as np
+import os
 
 try:
     from .venue_info import get_venue_info, get_venue_type_encoding, should_fetch_weather
@@ -70,7 +71,8 @@ class TransformerDataset(Dataset):
         team_feature_dim=32,
         match_feature_dim=8,
         col_map=None,            # optional explicit column mapping
-        fetch_weather=False,     # whether to fetch weather data (slow)
+        fetch_weather=False,     # whether to fetch weather data (slow if no cache)
+        weather_cache_path="data/weather_cache.csv",  # path to pre-fetched weather cache
     ):
         # normalize common column names (accept understat naming)
         self.df = _ensure_columns(df, col_map=col_map)
@@ -83,6 +85,20 @@ class TransformerDataset(Dataset):
         self.team_feature_dim = team_feature_dim
         self.match_feature_dim = match_feature_dim
         self.fetch_weather = fetch_weather
+
+        # Load weather cache if it exists
+        self.weather_cache = None
+        if fetch_weather and os.path.exists(weather_cache_path):
+            try:
+                self.weather_cache = pd.read_csv(weather_cache_path)
+                self.weather_cache['date'] = pd.to_datetime(self.weather_cache['date'])
+                print(f"✅ Loaded weather cache from {weather_cache_path} ({len(self.weather_cache)} records)")
+            except Exception as e:
+                print(f"⚠️  Failed to load weather cache: {e}")
+                print(f"   Will fall back to API calls if fetch_weather=True")
+        elif fetch_weather:
+            print(f"⚠️  Weather cache not found at {weather_cache_path}")
+            print(f"   Will use slow API calls. Consider running fetch_weather.ipynb first!")
 
         # build dictionary: team → list of past matches (indices)
         self.team_history = self._build_team_history()
@@ -99,6 +115,34 @@ class TransformerDataset(Dataset):
             hist[row["away_team"]].append(idx)
 
         return hist
+
+    def _get_weather_from_cache(self, home_team, match_date):
+        """
+        Lookup weather data from cache.
+        Returns dict with weather features or None if not found.
+        """
+        if self.weather_cache is None:
+            return None
+        
+        # Find matching record
+        match = self.weather_cache[
+            (self.weather_cache['home_team'] == home_team) &
+            (self.weather_cache['date'] == match_date)
+        ]
+        
+        if len(match) == 0:
+            return None
+        
+        # Convert to dict
+        record = match.iloc[0]
+        return {
+            'temperature_norm': record['temperature_norm'],
+            'precipitation': record['precipitation'],
+            'wind_speed_norm': record['wind_speed_norm'],
+            'cloud_cover_norm': record['cloud_cover_norm'],
+            'humidity_norm': record['humidity_norm'],
+            'is_dome': record['is_dome'],
+        }
 
     # History Feature Block
     def _get_team_history_block(self, team_name, current_idx):
@@ -174,12 +218,17 @@ class TransformerDataset(Dataset):
             if self.fetch_weather and should_fetch_weather(venue_type):
                 match_date = row.get("date")
                 if match_date and idx < self.match_feature_dim:
-                    weather = get_weather_features(
-                        venue_info["lat"],
-                        venue_info["lon"],
-                        match_date,
-                        venue_type=venue_type,
-                    )
+                    # Try cache first
+                    weather = self._get_weather_from_cache(home_team, match_date)
+                    
+                    # Fall back to API if cache miss
+                    if weather is None:
+                        weather = get_weather_features(
+                            venue_info["lat"],
+                            venue_info["lon"],
+                            match_date,
+                            venue_type=venue_type,
+                        )
                     
                     # Add weather features in order
                     weather_keys = [
@@ -211,16 +260,18 @@ class TransformerDataset(Dataset):
         B = row["away_team"]
 
         # Team A history block
-        A_block = self._get_team_history_block(A, idx)  # (H, F)
+        A_block = self._get_team_history_block(A, idx)  # (20, 32)
 
         # Team B history block
-        B_block = self._get_team_history_block(B, idx)  # (H, F)
+        B_block = self._get_team_history_block(B, idx)  # (20, 32)
 
-        # Match context block (1 token with venue/weather info)
-        M_block = self._match_block(row).reshape(1, -1)  # (1, match_feature_dim)
+        # Match context block (pad to match team_feature_dim)
+        M_vec = self._match_block(row)  # (8,)
+        M_block = np.zeros((1, self.team_feature_dim), dtype=np.float32)  # (1, 32)
+        M_block[0, :self.match_feature_dim] = M_vec  # Fill first 8 dims
 
         # Concatenate into sequence: [A_block tokens][B_block tokens][Match token]
-        x = np.concatenate([A_block, B_block, M_block], axis=0)
+        x = np.concatenate([A_block, B_block, M_block], axis=0)  # (41, 32)
         x = torch.tensor(x, dtype=torch.float32)
 
         # Match result (classification): 0=home win, 1=draw, 2=away win
@@ -258,6 +309,7 @@ class LinearDataset(Dataset):
         match_feature_dim=8,
         col_map=None,
         fetch_weather=False,
+        weather_cache_path="data/weather_cache.csv",
     ):
         # normalize column names (accept understat csv columns)
         self.df = _ensure_columns(df, col_map=col_map)
@@ -269,6 +321,20 @@ class LinearDataset(Dataset):
         self.team_feature_dim = team_feature_dim
         self.match_feature_dim = match_feature_dim
         self.fetch_weather = fetch_weather
+
+        # Load weather cache if it exists
+        self.weather_cache = None
+        if fetch_weather and os.path.exists(weather_cache_path):
+            try:
+                self.weather_cache = pd.read_csv(weather_cache_path)
+                self.weather_cache['date'] = pd.to_datetime(self.weather_cache['date'])
+                print(f"✅ Loaded weather cache from {weather_cache_path} ({len(self.weather_cache)} records)")
+            except Exception as e:
+                print(f"⚠️  Failed to load weather cache: {e}")
+                print(f"   Will fall back to API calls if fetch_weather=True")
+        elif fetch_weather:
+            print(f"⚠️  Weather cache not found at {weather_cache_path}")
+            print(f"   Will use slow API calls. Consider running fetch_weather.ipynb first!")
 
         # build dictionary: team → list of past matches (indices)
         self.team_history = self._build_team_history()
@@ -284,6 +350,34 @@ class LinearDataset(Dataset):
             hist[row["away_team"]].append(idx)
 
         return hist
+
+    def _get_weather_from_cache(self, home_team, match_date):
+        """
+        Lookup weather data from cache.
+        Returns dict with weather features or None if not found.
+        """
+        if self.weather_cache is None:
+            return None
+        
+        # Find matching record
+        match = self.weather_cache[
+            (self.weather_cache['home_team'] == home_team) &
+            (self.weather_cache['date'] == match_date)
+        ]
+        
+        if len(match) == 0:
+            return None
+        
+        # Convert to dict
+        record = match.iloc[0]
+        return {
+            'temperature_norm': record['temperature_norm'],
+            'precipitation': record['precipitation'],
+            'wind_speed_norm': record['wind_speed_norm'],
+            'cloud_cover_norm': record['cloud_cover_norm'],
+            'humidity_norm': record['humidity_norm'],
+            'is_dome': record['is_dome'],
+        }
 
     def _team_features(self, team_name, match_idx):
         # Keep same basic team feature construction as TransformerDataset
@@ -337,12 +431,17 @@ class LinearDataset(Dataset):
             if self.fetch_weather and should_fetch_weather(venue_type):
                 match_date = row.get("date")
                 if match_date and idx < self.match_feature_dim:
-                    weather = get_weather_features(
-                        venue_info["lat"],
-                        venue_info["lon"],
-                        match_date,
-                        venue_type=venue_type,
-                    )
+                    # Try cache first
+                    weather = self._get_weather_from_cache(home_team, match_date)
+                    
+                    # Fall back to API if cache miss
+                    if weather is None:
+                        weather = get_weather_features(
+                            venue_info["lat"],
+                            venue_info["lon"],
+                            match_date,
+                            venue_type=venue_type,
+                        )
                     
                     weather_keys = [
                         "temperature_norm",

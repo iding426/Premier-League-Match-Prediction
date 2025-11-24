@@ -1,29 +1,34 @@
 import torch
 import torch.nn as nn
-import numpy as np
 
 class MLP(nn.Module):
-    def __init__(self, input_space = 35) -> None:
+    def __init__(self, input_space=1288) -> None:
         super(MLP, self).__init__()
 
         self.net = nn.Sequential(
-            nn.Linear(input_space, input_space * 2),
+            nn.Linear(input_space, 512),
             nn.ReLU(),
-            nn.Linear(input_space * 2 ,256),
+            nn.Dropout(0.2),
+            nn.Linear(512, 256),
             nn.ReLU(),
-            nn.Linear(256, 16),
-            nn.ReLU,
-            nn.Linear(16, 4)
+            nn.Dropout(0.2),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 4)
         )
 
-    def forward(self, team_1: np.ndarray, team_2: np.ndarray, info: np.ndarray):
-        X = np.concat((info, team_1, team_2), axis=1)
+    def forward(self, x):
+        """
+        Args:
+            x: (B, 1288) - flattened input from LinearDataset
+        Returns:
+            probs: (B, 3) - win/draw/loss probabilities
+            goal_diff: (B, 1) - predicted goal difference
+        """
+        out = self.net(x)
 
-        X = torch.tensor(X, dtype=torch.float32)
-        out = self.net(X)
-
-        # Softmax the first 3 outputs for win/draw/loss probabilities
-        out_probs = nn.Softmax(dim=1)(out[:, :3])
+        # Softmax the first 3 outputs
+        out_probs = torch.softmax(out[:, :3], dim=1)
         # The last output is the predicted score difference
         out_score_diff = out[:, 3].unsqueeze(1)
 
