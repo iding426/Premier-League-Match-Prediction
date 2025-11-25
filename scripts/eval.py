@@ -10,6 +10,7 @@ from tqdm import tqdm
 import numpy as np
 import json
 from pathlib import Path
+import pandas as pd
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -28,23 +29,23 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Arguments
 parser = argparse.ArgumentParser(description="Evaluate performance of FPL prediction models")
-parser.add_argument("--model", type=str, default="mlp", choices=["mlp", "transformer"], help="Which fusion model to evaluate")
-parser.add_argument("--checkpoint", type=str, required=True, help="Path to fusion model weights")
+parser.add_argument("--model", type=str, default="mlp", choices=["mlp", "transformer"], help="Which model to evaluate")
+parser.add_argument("--checkpoint", type=str, required=True, help="Path to model weights")
 parser.add_argument("--output-dir", type=str, default="eval_results", help="Directory to save evaluation results")
 parser.add_argument("--batch-size", type=int, default=4, help="Batch size for evaluation")
-parser.add_argument("--dataset", ype=str, required=True, help="Path to eval CSV")
+parser.add_argument("--data-path", type=str, required=True, help="Path to the dataset CSV file")
 
 args = parser.parse_args()
 
 output_dir = Path(args.output_dir)
 output_dir.mkdir(exist_ok=True, parents=True)
 
-if args.fusion_model == "mlp":
+if args.model == "mlp":
     model = MLP().to(device)
-elif args.fusion_model == "transformer":
+elif args.model == "transformer":
     model = FPLMatchPredictor().to(device)
 else:
-    raise ValueError(f"Unknown fusion model: {args.fusion_model}")
+    raise ValueError(f"Unknown model: {args.model}")
 
 # Load Weights
 checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
@@ -81,34 +82,48 @@ def loss(
     
     return total_loss, ce, error
 
+# Load and filter dataset for years 2022-2024
+df = pd.read_csv(args.data_path)
+if 'date' in df.columns:
+    df['date'] = pd.to_datetime(df['date'])
+    df = df[df['date'].dt.year.isin([2022, 2023, 2024])]
+    print(f"Filtered to {len(df)} matches from years 2022-2024")
+else:
+    print("Warning: 'date' column not found, using all data")
+
 # Dataset
 if args.model == "mlp":
-    ds = LinearDataset()
+    ds = LinearDataset(df)
 elif args.model == "transformer":
-    ds = TransformerDataset()
+    ds = TransformerDataset(df)
 else:
-    raise ValueError(f"Unknown fusion model: {args.fusion_model}")
+    raise ValueError(f"Unknown model: {args.model}")
 
 dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, drop_last=False)
 
 # Eval on years 2022-2024 only
 all_losses = []
+all_predictions = []
+all_labels = []
+all_gd_preds = []
+all_gd_true = []
+
 with torch.no_grad():
-    for batch in tqdm(dl, desc="Evaluating Fusion Model"):
+    for x, y_result, y_goal_diff in tqdm(dl, desc="Evaluating Model"):
         # Move to device
-        for k in batch:
-            if isinstance(batch[k], torch.Tensor):
-                batch[k] = batch[k].to(device)
+        x = x.to(device)
+        y_result = y_result.to(device)
+        y_goal_diff = y_goal_diff.to(device)
 
         # Forward pass
-        logits, xgd_pred = model(batch)
+        logits, xgd_pred = model(x)
 
         # Compute loss
         batch_loss, ce, error = loss(
             logits,
             xgd_pred,
-            batch['y_result'],
-            batch['y_xgd'],
+            y_result,
+            y_goal_diff,
             alpha=alpha,
             beta=beta
         )
@@ -118,20 +133,60 @@ with torch.no_grad():
             'ce_loss': ce.item(),
             'mse_loss': error.item()
         })
+        
+        # Store predictions and labels for accuracy calculation
+        probs = F.softmax(logits, dim=1)
+        predicted_results = torch.argmax(probs, dim=1)
+        all_predictions.extend(predicted_results.cpu().numpy())
+        all_labels.extend(y_result.cpu().numpy())
+        all_gd_preds.extend(xgd_pred.cpu().numpy())
+        all_gd_true.extend(y_goal_diff.cpu().numpy())
 
 # Aggregate results
 total_loss = np.mean([l['total_loss'] for l in all_losses])
-ce_loss = np.mean([l['ce_loss'] for l in all_losses])
-mse_loss = np.mean([l['mse_loss'] for l in all_losses])
+ce_loss_avg = np.mean([l['ce_loss'] for l in all_losses])
+mse_loss_avg = np.mean([l['mse_loss'] for l in all_losses])
+
+# Calculate accuracy metrics
+all_predictions = np.array(all_predictions)
+all_labels = np.array(all_labels)
+all_gd_preds = np.array(all_gd_preds)
+all_gd_true = np.array(all_gd_true)
+
+# Overall accuracy
+overall_accuracy = np.mean(all_predictions == all_labels)
+
+# Per-class accuracy
+home_win_mask = all_labels == 0
+draw_mask = all_labels == 1
+away_win_mask = all_labels == 2
+
+home_win_acc = np.mean(all_predictions[home_win_mask] == 0) if home_win_mask.sum() > 0 else 0
+draw_acc = np.mean(all_predictions[draw_mask] == 1) if draw_mask.sum() > 0 else 0
+away_win_acc = np.mean(all_predictions[away_win_mask] == 2) if away_win_mask.sum() > 0 else 0
+
+# Average goal difference error (MAE)
+avg_gd_error = np.mean(np.abs(all_gd_preds - all_gd_true))
+
 results = {
     'total_loss': total_loss,
-    'ce_loss': ce_loss,
-    'mse_loss': mse_loss
+    'ce_loss': ce_loss_avg,
+    'mse_loss': mse_loss_avg,
+    'overall_accuracy': float(overall_accuracy),
+    'home_win_accuracy': float(home_win_acc),
+    'draw_accuracy': float(draw_acc),
+    'away_win_accuracy': float(away_win_acc),
+    'avg_goal_diff_error': float(avg_gd_error)
 }
 
 # Save results
-results_path = output_dir / "eval_results.json"
+results_path = output_dir / (args.model + "_results.json")
 with open(results_path, 'w') as f:
     json.dump(results, f, indent=4)
 print(f"Evaluation results saved to {results_path}")
-
+print(f"\nAccuracy Metrics:")
+print(f"  Overall: {overall_accuracy:.2%}")
+print(f"  Home Win: {home_win_acc:.2%}")
+print(f"  Draw: {draw_acc:.2%}")
+print(f"  Away Win: {away_win_acc:.2%}")
+print(f"  Avg GD Error: {avg_gd_error:.3f}")
