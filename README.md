@@ -263,7 +263,7 @@ MIT License - See LICENSE file for details
 ## Authors
 
 - Ian Ding (@iding426)
-- Fola Ogunsola
+- Mofolaoluwarera Oladipo
 
 ## Acknowledgments
 
