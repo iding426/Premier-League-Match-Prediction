@@ -2,19 +2,21 @@ import torch
 import torch.nn as nn
 
 class MLP(nn.Module):
-    def __init__(self, input_space=1288) -> None:
+    def __init__(self, input_space=651) -> None:
         super(MLP, self).__init__()
 
+        # Smaller, more appropriate architecture for 491 input features
         self.net = nn.Sequential(
-            nn.Linear(input_space, 512),
+            nn.Linear(input_space, 256),  # Reduced from 512
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(512, 256),
+            nn.Dropout(0.4),  # Increased from 0.3
+            nn.Linear(256, 128),  # Reduced from 256
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(256, 128),
+            nn.Dropout(0.4),  # Increased from 0.3
+            nn.Linear(128, 64),   # Reduced from 128
             nn.ReLU(),
-            nn.Linear(128, 4)
+            nn.Dropout(0.3),  # Increased from 0.2
+            nn.Linear(64, 4)
         )
 
     def forward(self, x):

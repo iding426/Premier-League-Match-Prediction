@@ -107,9 +107,10 @@ all_predictions = []
 all_labels = []
 all_gd_preds = []
 all_gd_true = []
+sample_results = []  # Store detailed results for a sample of matches
 
 with torch.no_grad():
-    for x, y_result, y_goal_diff in tqdm(dl, desc="Evaluating Model"):
+    for batch_idx, (x, y_result, y_goal_diff) in enumerate(tqdm(dl, desc="Evaluating Model")):
         # Move to device
         x = x.to(device)
         y_result = y_result.to(device)
@@ -141,6 +142,28 @@ with torch.no_grad():
         all_labels.extend(y_result.cpu().numpy())
         all_gd_preds.extend(xgd_pred.cpu().numpy())
         all_gd_true.extend(y_goal_diff.cpu().numpy())
+        
+        # Save sample results (first 50 matches)
+        if len(sample_results) < 50:
+            for i in range(len(y_result)):
+                if len(sample_results) >= 50:
+                    break
+                idx = batch_idx * args.batch_size + i
+                if idx < len(ds):
+                    match_row = ds.df.iloc[idx]
+                    result_map = {0: 'Home Win', 1: 'Draw', 2: 'Away Win'}
+                    sample_results.append({
+                        'date': str(match_row.get('date', '')),
+                        'home_team': match_row['home_team'],
+                        'away_team': match_row['away_team'],
+                        'actual_result': result_map[y_result[i].item()],
+                        'predicted_result': result_map[predicted_results.cpu().numpy()[batch_idx * args.batch_size + i]],
+                        'home_win_prob': f"{probs[i, 0].item():.2%}",
+                        'draw_prob': f"{probs[i, 1].item():.2%}",
+                        'away_win_prob': f"{probs[i, 2].item():.2%}",
+                        'actual_gd': f"{y_goal_diff[i].item():.1f}",
+                        'predicted_gd': f"{xgd_pred[i].item():.1f}"
+                    })
 
 # Aggregate results
 total_loss = np.mean([l['total_loss'] for l in all_losses])
@@ -176,13 +199,25 @@ results = {
     'home_win_accuracy': float(home_win_acc),
     'draw_accuracy': float(draw_acc),
     'away_win_accuracy': float(away_win_acc),
-    'avg_goal_diff_error': float(avg_gd_error)
+    'avg_goal_diff_error': float(avg_gd_error),
+    'sample_predictions': sample_results
 }
 
 # Save results
 results_path = output_dir / (args.model + "_results.json")
 with open(results_path, 'w') as f:
     json.dump(results, f, indent=4)
+
+# Also save sample as CSV for easier viewing
+if sample_results:
+    import csv
+    csv_path = output_dir / (args.model + "_sample_predictions.csv")
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=sample_results[0].keys())
+        writer.writeheader()
+        writer.writerows(sample_results)
+    print(f"Sample predictions saved to {csv_path}")
+
 print(f"Evaluation results saved to {results_path}")
 print(f"\nAccuracy Metrics:")
 print(f"  Overall: {overall_accuracy:.2%}")

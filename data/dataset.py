@@ -164,30 +164,52 @@ class TransformerDataset(Dataset):
     # Team Features
     def _team_features(self, team_name, match_idx):
         """
-        Returns a vector of size team_feature_dim.
-        Fill with whatever you want:
-            form, goals scored, goals conceded, rolling averages, rating, etc.
+        Extract features for a team from a specific match.
+        These are per-match stats that become part of the team's history.
+        Safe to use because we only look at matches BEFORE current_idx in _get_team_history_block.
         """
         row = self.df.iloc[match_idx]
 
-        # Starter Features
+        # Basic match outcome features
         is_home = 1 if row["home_team"] == team_name else 0
         goals_for = row["home_goals"] if is_home else row["away_goals"]
         goals_against = row["away_goals"] if is_home else row["home_goals"]
-        xG = row["h_xg"] if is_home else row["a_xg"]
-        xGA = row["a_xg"] if is_home else row["h_xg"]
         goal_diff = goals_for - goals_against
 
-        # Basic Feature Vector
+        # xG Features
+        xG = row.get("h_xg", 0) if is_home else row.get("a_xg", 0)
+        xGA = row.get("a_xg", 0) if is_home else row.get("h_xg", 0)
+        
+        # Shot features
+        shots = row.get("h_shot", 0) if is_home else row.get("a_shot", 0)
+        shots_against = row.get("a_shot", 0) if is_home else row.get("h_shot", 0)
+        shots_on_target = row.get("h_shotOnTarget", 0) if is_home else row.get("a_shotOnTarget", 0)
+        shots_on_target_against = row.get("a_shotOnTarget", 0) if is_home else row.get("h_shotOnTarget", 0)
+        
+        # Deep passes
+        deep = row.get("h_deep", 0) if is_home else row.get("a_deep", 0)
+        deep_against = row.get("a_deep", 0) if is_home else row.get("h_deep", 0)
+        
+        # PPDA (Passes Per Defensive Action)
+        ppda = row.get("h_ppda", 0) if is_home else row.get("a_ppda", 0)
+        ppda_against = row.get("a_ppda", 0) if is_home else row.get("h_ppda", 0)
+
+        # Feature Vector - now using 18 features instead of 10
         vec = np.zeros(self.team_feature_dim, dtype=np.float32)
         vec[0] = is_home
         vec[1] = goals_for
         vec[2] = goals_against
         vec[3] = goal_diff
-        
-        # Advanced Features
         vec[4] = xG
         vec[5] = xGA
+        vec[6] = shots
+        vec[7] = shots_against
+        vec[8] = shots_on_target
+        vec[9] = shots_on_target_against
+        vec[10] = deep
+        vec[11] = deep_against
+        vec[12] = ppda
+        vec[13] = ppda_against
 
         return vec
 
@@ -265,10 +287,18 @@ class TransformerDataset(Dataset):
         # Team B history block
         B_block = self._get_team_history_block(B, idx)  # (20, 32)
 
-        # Match context block (pad to match team_feature_dim)
-        M_vec = self._match_block(row)  # (8,)
+        # Match context block with team records computed from history
+        M_vec = self._match_block(row)  # (base features)
+        # Add home team records from matches before this one
+        h_wins, h_draws, h_losses = self._get_team_record_before_match(A, idx)
+        
         M_block = np.zeros((1, self.team_feature_dim), dtype=np.float32)  # (1, 32)
-        M_block[0, :self.match_feature_dim] = M_vec  # Fill first 8 dims
+        M_block[0, :len(M_vec)] = M_vec  # Fill base features
+        # Add team records at the end of available match_feature_dim
+        if len(M_vec) + 3 <= self.team_feature_dim:
+            M_block[0, len(M_vec)] = h_wins
+            M_block[0, len(M_vec) + 1] = h_draws
+            M_block[0, len(M_vec) + 2] = h_losses
 
         # Concatenate into sequence: [A_block tokens][B_block tokens][Match token]
         x = np.concatenate([A_block, B_block, M_block], axis=0)  # (41, 32)
@@ -379,20 +409,85 @@ class LinearDataset(Dataset):
             'is_dome': record['is_dome'],
         }
 
+    def _get_team_record_before_match(self, team_name, current_idx):
+        """
+        Compute team's W-D-L record from matches BEFORE current_idx.
+        Returns (wins, draws, losses) tuple.
+        No data leakage - only uses historical matches.
+        """
+        past_matches = [i for i in self.team_history[team_name] if i < current_idx]
+        
+        wins = 0
+        draws = 0
+        losses = 0
+        
+        for match_idx in past_matches:
+            row = self.df.iloc[match_idx]
+            is_home = row["home_team"] == team_name
+            
+            if is_home:
+                if row["home_goals"] > row["away_goals"]:
+                    wins += 1
+                elif row["home_goals"] == row["away_goals"]:
+                    draws += 1
+                else:
+                    losses += 1
+            else:
+                if row["away_goals"] > row["home_goals"]:
+                    wins += 1
+                elif row["away_goals"] == row["home_goals"]:
+                    draws += 1
+                else:
+                    losses += 1
+        
+        return wins, draws, losses
+
     def _team_features(self, team_name, match_idx):
-        # Keep same basic team feature construction as TransformerDataset
+        """
+        Extract features for a team from a specific match.
+        These are per-match stats that become part of the team's history.
+        Safe to use because we only look at matches BEFORE current_idx in history.
+        """
         row = self.df.iloc[match_idx]
 
         is_home = 1 if row["home_team"] == team_name else 0
         goals_for = row["home_goals"] if is_home else row["away_goals"]
         goals_against = row["away_goals"] if is_home else row["home_goals"]
         goal_diff = goals_for - goals_against
+        
+        # xG Features
+        xG = row.get("h_xg", 0) if is_home else row.get("a_xg", 0)
+        xGA = row.get("a_xg", 0) if is_home else row.get("h_xg", 0)
+        
+        # Shot features
+        shots = row.get("h_shot", 0) if is_home else row.get("a_shot", 0)
+        shots_against = row.get("a_shot", 0) if is_home else row.get("h_shot", 0)
+        shots_on_target = row.get("h_shotOnTarget", 0) if is_home else row.get("a_shotOnTarget", 0)
+        shots_on_target_against = row.get("a_shotOnTarget", 0) if is_home else row.get("h_shotOnTarget", 0)
+        
+        # Deep passes
+        deep = row.get("h_deep", 0) if is_home else row.get("a_deep", 0)
+        deep_against = row.get("a_deep", 0) if is_home else row.get("h_deep", 0)
+        
+        # PPDA
+        ppda = row.get("h_ppda", 0) if is_home else row.get("a_ppda", 0)
+        ppda_against = row.get("a_ppda", 0) if is_home else row.get("h_ppda", 0)
 
         vec = np.zeros(self.team_feature_dim, dtype=np.float32)
         vec[0] = is_home
         vec[1] = goals_for
         vec[2] = goals_against
         vec[3] = goal_diff
+        vec[4] = xG
+        vec[5] = xGA
+        vec[6] = shots
+        vec[7] = shots_against
+        vec[8] = shots_on_target
+        vec[9] = shots_on_target_against
+        vec[10] = deep
+        vec[11] = deep_against
+        vec[12] = ppda
+        vec[13] = ppda_against
 
         return vec
 
@@ -475,9 +570,13 @@ class LinearDataset(Dataset):
 
         # Match context vector (venue/weather info)
         M_vec = self._match_vector(row)
+        
+        # Add home team records computed from history
+        h_wins, h_draws, h_losses = self._get_team_record_before_match(A, idx)
+        M_vec_with_records = np.concatenate([M_vec, [h_wins, h_draws, h_losses]])
 
-        # Concatenate: [Home_flat, Away_flat, Match_vector]
-        x = np.concatenate([A_flat, B_flat, M_vec], axis=0)
+        # Concatenate: [Home_flat, Away_flat, Match_vector_with_records]
+        x = np.concatenate([A_flat, B_flat, M_vec_with_records], axis=0)
         x = torch.tensor(x, dtype=torch.float32)
 
         # Match result (classification): 0=home win, 1=draw, 2=away win
